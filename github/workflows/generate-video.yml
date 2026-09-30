@@ -1,0 +1,92 @@
+name: Generate Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      subject:
+        description: "Video subject / keyword (English works best with Pixabay)"
+        required: true
+        type: string
+      language:
+        description: "Script language code (e.g. en-US, ar-EG)"
+        required: false
+        default: "en-US"
+        type: string
+      aspect:
+        description: "Video aspect ratio"
+        required: false
+        default: "9:16"
+        type: choice
+        options:
+          - "9:16"
+          - "16:9"
+          - "1:1"
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: |
+          # litellm 1.86.2 is not available on PyPI, so use an available version
+          sed -i 's/litellm==1.86.2/litellm==1.93.2/' requirements.txt
+          pip install -r requirements.txt
+
+      - name: Create config.toml from secrets
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          cp config.example.toml config.toml
+          python - <<'PY'
+          import os
+          import toml
+
+          with open("config.toml", encoding="utf-8") as f:
+              cfg = toml.load(f)
+
+          app = cfg.setdefault("app", {})
+          app["llm_provider"] = "groq"
+          app["groq_api_key"] = os.environ["GROQ_API_KEY"]
+          app["groq_base_url"] = "https://api.groq.com/openai/v1"
+          app["groq_model_name"] = "openai/gpt-oss-120b"
+          app["video_source"] = "pixabay"
+          app["pixabay_api_keys"] = [os.environ["PIXABAY_API_KEY"]]
+
+          with open("config.toml", "w", encoding="utf-8") as f:
+              toml.dump(cfg, f)
+          PY
+
+      - name: Generate video
+        env:
+          SUBJECT: ${{ inputs.subject }}
+          LANGUAGE: ${{ inputs.language }}
+          ASPECT: ${{ inputs.aspect }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py \
+            --video-subject "$SUBJECT" \
+            --video-language "$LANGUAGE" \
+            --video-aspect "$ASPECT" \
+            --video-source pixabay
+
+      - name: Upload video
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-video
+          path: storage/tasks/**/final-*.mp4
+          if-no-files-found: error
+          retention-days: 7
